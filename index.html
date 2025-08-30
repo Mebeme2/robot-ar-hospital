@@ -1,21 +1,25 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>AR Robot Hospital</title>
+<title>AR Robot Hospital Mission</title>
 <style>
-  html,body{height:100%;margin:0;background:#000;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#cfe0f2;}
   #ui {
     position:fixed; left:12px; bottom:12px; z-index:10;
     background:rgba(0,0,0,0.55); color:#fff; padding:10px 12px;
     border-radius:10px; font-family:system-ui,Segoe UI,Roboto,sans-serif;
     font-size:14px;
   }
+  canvas{display:block;}
 </style>
 </head>
 <body>
-<div id="ui">Move phone slowly to find a surface → Tap to place the robot</div>
+<div id="ui">Tap the robot to start the mission, then tap a bed to deliver medicine.</div>
+
+<!-- Confetti library -->
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
 
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.128/build/three.module.js';
@@ -23,13 +27,17 @@ import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.128/examples/jsm/
 
 let scene, camera, renderer;
 let reticle, hitTestSource = null, localRefSpace = null;
-let robot = null, bedsPlaced = false;
+let robot = null, beds = [], targets = [];
+let missionStep = 0, bedsPlaced = false;
+let floatingMessages = [];
 
+// --- Initialize scene ---
 init();
-start();
+animate();
 
 function init(){
   scene = new THREE.Scene();
+
   camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 40);
 
   renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
@@ -45,7 +53,7 @@ function init(){
   dir.position.set(1,2,1);
   scene.add(dir);
 
-  // reticle
+  // Reticle for placement
   const ringGeo = new THREE.RingGeometry(0.12, 0.15, 32);
   ringGeo.rotateX(-Math.PI/2);
   const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
@@ -54,22 +62,24 @@ function init(){
   reticle.visible = false;
   scene.add(reticle);
 
-  // AR Button (request hit-test)
+  // ARButton
   document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 
   renderer.xr.addEventListener('sessionstart', onSessionStart);
   renderer.xr.addEventListener('sessionend', onSessionEnd);
 
   window.addEventListener('resize', onResize);
-  window.addEventListener('click', placeAtReticle);
+  window.addEventListener('click', onScreenTap);
 }
 
+// --- Resize ---
 function onResize(){
   camera.aspect = window.innerWidth/window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
+// --- AR session ---
 async function onSessionStart(){
   const session = renderer.xr.getSession();
   const viewerSpace = await session.requestReferenceSpace('viewer');
@@ -83,90 +93,133 @@ function onSessionEnd(){
   reticle.visible = false;
 }
 
-function start(){
-  renderer.setAnimationLoop(render);
-}
+// --- Tap handler ---
+function onScreenTap(){
+  if(!reticle.visible) return;
 
-function render(time, frame){
-  if (frame && hitTestSource && localRefSpace){
-    const hits = frame.getHitTestResults(hitTestSource);
-    if (hits.length){
-      const hit = hits[0];
-      const pose = hit.getPose(localRefSpace);
-      reticle.visible = true;
-      reticle.matrix.fromArray(pose.transform.matrix);
-    } else {
-      reticle.visible = false;
+  const m = new THREE.Matrix4().copy(reticle.matrix);
+  const pos = new THREE.Vector3().setFromMatrixPosition(m);
+
+  if(!robot){
+    robot = createRobot();
+    robot.position.copy(pos);
+    scene.add(robot);
+    // place beds around robot
+    placeBeds(pos);
+  } else {
+    // assign next target bed
+    if(missionStep < beds.length){
+      targets[missionStep] = pos.clone();
+      missionStep++;
     }
   }
-  renderer.render(scene, camera);
 }
 
-// --- simple robot model (group)
+// --- Create simple robot ---
 function createRobot(){
   const group = new THREE.Group();
-
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xf8f8f8, roughness: 0.2, metalness: 0.1 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.5, 0.25), bodyMat);
+  const bodyMat = new THREE.MeshStandardMaterial({ color:0xf8f8f8, roughness:0.2, metalness:0.1 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.35,0.5,0.25), bodyMat);
   body.position.y = 0.25;
   group.add(body);
 
-  const screenMat = new THREE.MeshStandardMaterial({ color: 0x0b0b0b, emissive: 0x113344, emissiveIntensity: 0.35, metalness: 0.8, roughness: 0.3 });
-  const screen = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.03), screenMat);
-  screen.position.set(0, 0.37, 0.14);
+  const screen = new THREE.Mesh(new THREE.BoxGeometry(0.22,0.14,0.03), new THREE.MeshStandardMaterial({ color:0x0b0b0b, emissive:0x113344, emissiveIntensity:0.35 }));
+  screen.position.set(0,0.37,0.14);
   group.add(screen);
 
-  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00cccc, emissiveIntensity: 0.8 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color:0x00ffff, emissive:0x00cccc, emissiveIntensity:0.8 });
   const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.06,0.06,0.02), eyeMat);
   const rightEye = leftEye.clone();
-  leftEye.position.set(-0.06, 0.36, 0.16);
-  rightEye.position.set(0.06, 0.36, 0.16);
-  group.add(leftEye, rightEye);
-
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0xffff00, roughness: 0.9 });
-  const wheelGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.04, 24);
-  const offsets = [[-0.16,0.08,0.10],[0.16,0.08,0.10],[-0.16,0.08,-0.10],[0.16,0.08,-0.10]];
-  offsets.forEach(o => {
-    const w = new THREE.Mesh(wheelGeo, wheelMat);
-    w.rotation.z = Math.PI/2;
-    w.position.set(o[0], o[1], o[2]);
-    group.add(w);
-  });
+  leftEye.position.set(-0.06,0.36,0.16); rightEye.position.set(0.06,0.36,0.16);
+  group.add(leftEye,rightEye);
 
   return group;
 }
 
-// create two simple beds
-function createBedAt(x,y,z){
-  const base = new THREE.Mesh(new THREE.BoxGeometry(0.9,0.12,0.45), new THREE.MeshStandardMaterial({color:0x999999}));
-  base.position.set(x, y + 0.06, z);
-  scene.add(base);
-
-  const mattress = new THREE.Mesh(new THREE.BoxGeometry(0.9,0.08,0.45), new THREE.MeshStandardMaterial({color:0xffefef}));
-  mattress.position.set(x, y + 0.16, z);
-  scene.add(mattress);
+// --- Place two beds ---
+function placeBeds(robotPos){
+  if(bedsPlaced) return;
+  const bedOffset = 0.8;
+  const positions = [
+    new THREE.Vector3(robotPos.x + bedOffset, robotPos.y, robotPos.z - 0.9),
+    new THREE.Vector3(robotPos.x - bedOffset, robotPos.y, robotPos.z - 0.9)
+  ];
+  positions.forEach(pos => {
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.9,0.12,0.45), new THREE.MeshStandardMaterial({color:0x999999}));
+    base.position.set(pos.x,pos.y+0.06,pos.z);
+    const mattress = new THREE.Mesh(new THREE.BoxGeometry(0.9,0.08,0.45), new THREE.MeshStandardMaterial({color:0xffefef}));
+    mattress.position.set(pos.x,pos.y+0.16,pos.z);
+    scene.add(base,mattress);
+    beds.push(pos);
+  });
+  bedsPlaced = true;
 }
 
-function placeAtReticle(){
-  if (!reticle.visible) return;
+// --- Floating message ---
+function showMessage(text, position){
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = "rgba(255,255,255,0)";
+  ctx.fillRect(0,0,256,128);
+  ctx.font = "20px Arial"; ctx.fillStyle = "#ff3399";
+  ctx.textAlign = "center"; ctx.fillText(text,128,64);
+  const texture = new THREE.CanvasTexture(canvas);
+  const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent:true });
+  const sprite = new THREE.Sprite(spriteMat);
+  sprite.position.copy(position);
+  sprite.position.y += 0.5;
+  sprite.scale.set(0.6,0.3,0.3);
+  scene.add(sprite);
+  floatingMessages.push(sprite);
+  setTimeout(()=>{ scene.remove(sprite); },2000);
+}
 
-  if (!robot){
-    robot = createRobot();
-    scene.add(robot);
+// --- Animate / move robot ---
+function animate(){
+  renderer.setAnimationLoop(render);
+}
+
+function render(time, frame){
+  // Update reticle
+  if(frame && hitTestSource && localRefSpace){
+    const hits = frame.getHitTestResults(hitTestSource);
+    if(hits.length){
+      const hit = hits[0];
+      const pose = hit.getPose(localRefSpace);
+      reticle.visible = true;
+      reticle.matrix.fromArray(pose.transform.matrix);
+    } else reticle.visible = false;
   }
 
-  // position robot at the reticle
-  const m = new THREE.Matrix4().copy(reticle.matrix);
-  const pos = new THREE.Vector3().setFromMatrixPosition(m);
-  robot.position.copy(pos);
+  // Robot movement
+  if(robot && missionStep > 0){
+    const target = beds[0];
+    for(let i=0;i<beds.length;i++){
+      const t = targets[i];
+      if(t){
+        const dir = new THREE.Vector3().subVectors(t, robot.position);
+        if(dir.length() > 0.02){
+          dir.multiplyScalar(0.05);
+          robot.position.add(dir);
+        } else {
+          showMessage("Medicine delivered!", t);
+          targets[i] = null;
+        }
+      }
+    }
 
-  // place beds once
-  if (!bedsPlaced){
-    const y = pos.y;
-    createBedAt(pos.x + 0.8, y, pos.z - 0.9);
-    createBedAt(pos.x - 0.8, y, pos.z - 0.9);
-    bedsPlaced = true;
+    // Confetti when all beds done
+    if(targets.every(t=>t===null)){
+      if(!window.missionComplete){
+        window.missionComplete = true;
+        showMessage("Mission Successful!", robot.position);
+        confetti({ particleCount: 200, spread: 120, origin:{y:0.6} });
+      }
+    }
   }
+
+  renderer.render(scene,camera);
 }
 </script>
 </body>
