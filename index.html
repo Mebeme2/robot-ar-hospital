@@ -3,73 +3,200 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AR Robot Mission</title>
-    <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/ar.js@3.3.2/aframe/build/aframe-ar.js"></script>
+    <title>Markerless AR Robot</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #message {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-family: sans-serif;
+            display: none;
+            z-index: 10;
+        }
+    </style>
 </head>
-<body style="margin:0; overflow:hidden;">
-<a-scene embedded arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;">
-    
-    <!-- Marker -->
-    <a-marker preset="hiro">
-        <!-- Lights -->
-        <a-entity light="type: ambient; color: #ffffff; intensity: 0.7"></a-entity>
-        <a-entity light="type: directional; color: #ffffff; intensity: 0.5" position="1 2 1"></a-entity>
+<body>
+    <div id="message"></div>
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
+        import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/webxr/ARButton.js';
 
-        <!-- Robot -->
-        <a-entity id="robot" position="0 0 0" rotation="0 0 0">
-            <!-- Body -->
-            <a-box width="0.5" height="0.7" depth="0.4" color="#f8f8f8" material="shader: standard; roughness: 0.2; metalness:0.05"></a-box>
-            <!-- Screen -->
-            <a-box position="0 0.35 0.2" width="0.3" height="0.3" depth="0.05" color="#00ffff" material="shader: standard; emissive:#00ffff; emissiveIntensity:0.8"></a-box>
-            <!-- Eyes -->
-            <a-box position="-0.15 0.35 0.22" width="0.08" height="0.08" depth="0.05" color="#00ffff" material="shader: standard; emissive:#00ffff; emissiveIntensity:1.2"></a-box>
-            <a-box position="0.15 0.35 0.22" width="0.08" height="0.08" depth="0.05" color="#00ffff" material="shader: standard; emissive:#00ffff; emissiveIntensity:1.2"></a-box>
-            <!-- Wheels -->
-            <a-cylinder position="-0.2 0.05 0.15" radius="0.08" height="0.05" rotation="90 0 0" color="#FFFF00" material="shader: standard"></a-cylinder>
-            <a-cylinder position="0.2 0.05 0.15" radius="0.08" height="0.05" rotation="90 0 0" color="#FFFF00" material="shader: standard"></a-cylinder>
-            <a-cylinder position="-0.2 0.05 -0.15" radius="0.08" height="0.05" rotation="90 0 0" color="#FFFF00" material="shader: standard"></a-cylinder>
-            <a-cylinder position="0.2 0.05 -0.15" radius="0.08" height="0.05" rotation="90 0 0" color="#FFFF00" material="shader: standard"></a-cylinder>
-        </a-entity>
+        let camera, scene, renderer;
+        let controller;
+        let robot, bed;
+        let moving = false;
 
-        <!-- Bed -->
-        <a-box id="bed" position="1 0 0" width="0.7" height="0.4" depth="1.5" color="#8B4513" material="shader: standard" shadow></a-box>
-    </a-marker>
+        init();
+        animate();
 
-    <a-entity camera></a-entity>
-</a-scene>
+        function init() {
+            scene = new THREE.Scene();
 
-<script>
-    const robot = document.getElementById('robot');
-    const bed = document.getElementById('bed');
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 20);
 
-    let moving = false;
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            document.body.appendChild(renderer.domElement);
 
-    bed.addEventListener('click', () => {
-        if (moving) return;
-        moving = true;
+            document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 
-        const startPos = robot.object3D.position.clone();
-        const endPos = bed.object3D.position.clone();
-        endPos.y = startPos.y; // same height
+            // Light
+            const ambientLight = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 0.8);
+            scene.add(ambientLight);
 
-        let startTime = null;
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            directionalLight.position.set(1, 2, 1);
+            scene.add(directionalLight);
 
-        function animateRobot(timestamp) {
-            if (!startTime) startTime = timestamp;
-            const progress = (timestamp - startTime) / 2000; // 2 seconds
-            if (progress < 1) {
-                robot.object3D.position.lerpVectors(startPos, endPos, progress);
-                requestAnimationFrame(animateRobot);
-            } else {
-                robot.object3D.position.copy(endPos);
-                alert('Mission Successful. See you again!');
-                moving = false;
+            // Robot
+            robot = new THREE.Group();
+            // Body
+            const body = new THREE.Mesh(
+                new THREE.BoxGeometry(0.5, 0.7, 0.4),
+                new THREE.MeshStandardMaterial({ color: 0xf8f8f8, roughness: 0.2, metalness: 0.05 })
+            );
+            robot.add(body);
+            // Screen
+            const screen = new THREE.Mesh(
+                new THREE.BoxGeometry(0.3, 0.3, 0.05),
+                new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive:0x00ffff, emissiveIntensity: 0.8 })
+            );
+            screen.position.set(0,0.35,0.2);
+            robot.add(screen);
+            // Eyes
+            const leftEye = new THREE.Mesh(
+                new THREE.BoxGeometry(0.08,0.08,0.05),
+                new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive:0x00ffff, emissiveIntensity:1.2 })
+            ); leftEye.position.set(-0.15,0.35,0.22);
+            robot.add(leftEye);
+            const rightEye = new THREE.Mesh(
+                new THREE.BoxGeometry(0.08,0.08,0.05),
+                new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive:0x00ffff, emissiveIntensity:1.2 })
+            ); rightEye.position.set(0.15,0.35,0.22);
+            robot.add(rightEye);
+            // Wheels
+            const wheelGeom = new THREE.CylinderGeometry(0.08,0.08,0.05,32);
+            const wheelPositions = [
+                [-0.2,0.05,0.15],[0.2,0.05,0.15],
+                [-0.2,0.05,-0.15],[0.2,0.05,-0.15]
+            ];
+            wheelPositions.forEach(p=>{
+                const w = new THREE.Mesh(wheelGeom,new THREE.MeshStandardMaterial({color:0xFFFF00}));
+                w.rotation.z = Math.PI/2; w.position.set(p[0],p[1],p[2]);
+                robot.add(w);
+            });
+
+            // Place robot initially off-screen; will place on touch
+            robot.position.set(0, -1, 0);
+            scene.add(robot);
+
+            // Bed
+            bed = new THREE.Mesh(
+                new THREE.BoxGeometry(0.7,0.4,1.5),
+                new THREE.MeshStandardMaterial({color:0x8B4513})
+            );
+            bed.position.set(0, -1, 0); // Will place with touch
+            scene.add(bed);
+
+            // Controller for touch
+            controller = renderer.xr.getController(0);
+            controller.addEventListener('select', onSelect);
+            scene.add(controller);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize(){
+            camera.aspect = window.innerWidth/window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        let hitTestSource = null;
+        let localSpace = null;
+
+        renderer.xr.addEventListener('sessionstart', async () => {
+            const session = renderer.xr.getSession();
+            const viewerRefSpace = await session.requestReferenceSpace('viewer');
+            hitTestSource = await session.requestHitTestSource({ space: viewerRefSpace });
+            localSpace = await session.requestReferenceSpace('local');
+        });
+
+        function onSelect() {
+            if (!hitTestSource) return;
+            const frame = renderer.xr.getFrame();
+            const referenceSpace = localSpace;
+            const hitTestResults = frame.getHitTestResults(hitTestSource);
+
+            if(hitTestResults.length){
+                const hit = hitTestResults[0];
+                const pose = hit.getPose(referenceSpace);
+
+                // Place robot and bed if not yet placed
+                if(robot.position.y < 0){
+                    robot.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+                    bed.position.set(pose.transform.position.x + 1, pose.transform.position.y, pose.transform.position.z);
+                } else {
+                    // Check if selecting the bed (simple distance check)
+                    const d = new THREE.Vector3().subVectors(new THREE.Vector3(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z), bed.position).length();
+                    if(d < 0.5 && !moving){
+                        moveRobotToBed();
+                    }
+                }
             }
         }
 
-        requestAnimationFrame(animateRobot);
-    });
-</script>
+        function moveRobotToBed(){
+            moving = true;
+            const startPos = robot.position.clone();
+            const endPos = bed.position.clone();
+            endPos.y = startPos.y;
+            const duration = 2000;
+            let startTime = null;
+
+            function animateMove(timestamp){
+                if(!startTime) startTime = timestamp;
+                const progress = (timestamp - startTime)/duration;
+                if(progress <1){
+                    robot.position.lerpVectors(startPos,endPos,progress);
+                    requestAnimationFrame(animateMove);
+                } else{
+                    robot.position.copy(endPos);
+                    showMessage("Mission Successful. See you again!");
+                    moving = false;
+                }
+            }
+            requestAnimationFrame(animateMove);
+        }
+
+        function showMessage(msg){
+            const div = document.getElementById('message');
+            div.innerText = msg;
+            div.style.display = 'block';
+            setTimeout(()=>{div.style.display='none';},3000);
+        }
+
+        function animate() {
+            renderer.setAnimationLoop(render);
+        }
+
+        function render(timestamp, frame) {
+            // Pulsing eyes
+            const time = performance.now() * 0.002;
+            robot.children.forEach(c=>{
+                if(c.material && c.material.emissive){
+                    c.material.emissiveIntensity = 0.8 + 0.4*Math.sin(time);
+                }
+            });
+            renderer.render(scene,camera);
+        }
+    </script>
 </body>
 </html>
